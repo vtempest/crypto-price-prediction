@@ -479,15 +479,43 @@ export default function BTCPriceCharts() {
       }
     }
 
+    // Pre-process separate polymarket data for efficient forward-fill interpolation
+    // Convert time strings to numeric seconds for fast binary search
+    const sortedPolyData: { seconds: number; price: number }[] = []
+    if (hasSeparatePolymarketData && currentPolymarketInterval?.data?.length > 0) {
+      currentPolymarketInterval.data.forEach((p: any) => {
+        const parts = p.time.split(':').map(Number)
+        sortedPolyData.push({
+          seconds: parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0),
+          price: p.price,
+        })
+      })
+      sortedPolyData.sort((a, b) => a.seconds - b.seconds)
+    }
+
     // Prepare combined BTC + Polymarket chart data
     const btcChartData = currentBtcInterval.data.map((d, idx) => {
-      // Use embedded polymarketOdds from BTC API if available, otherwise try to find matching Polymarket data
-      let polyOdds = d.polymarketOdds || null
+      // Use embedded polymarketOdds from BTC API if available
+      let polyOdds: number | null = d.polymarketOdds ?? null
 
-      // Fallback to separate Polymarket data if embedded odds not available
-      if (!polyOdds && hasPolymarketData) {
-        const matchingPoly = currentPolymarketInterval.data.find(p => p.time === d.time)
-        polyOdds = matchingPoly ? matchingPoly.price : null
+      // Fallback: forward-fill interpolation from separate Polymarket data
+      if (polyOdds === null && sortedPolyData.length > 0) {
+        const parts = d.time.split(':').map(Number)
+        const btcSeconds = parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0)
+
+        // Binary search for last polymarket data point at or before this time
+        let lo = 0, hi = sortedPolyData.length - 1
+        let best: number | null = null
+        while (lo <= hi) {
+          const mid = Math.floor((lo + hi) / 2)
+          if (sortedPolyData[mid].seconds <= btcSeconds) {
+            best = sortedPolyData[mid].price
+            lo = mid + 1
+          } else {
+            hi = mid - 1
+          }
+        }
+        polyOdds = best
       }
 
       return {
