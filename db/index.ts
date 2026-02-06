@@ -28,10 +28,16 @@ export async function initializeDatabase() {
       close REAL NOT NULL,
       volume REAL NOT NULL,
       number_of_trades INTEGER NOT NULL,
+      polymarket_odds REAL,
       created_at INTEGER NOT NULL,
       UNIQUE(date, timestamp)
     );
   `);
+
+  // Add polymarket_odds column to existing tables (no-op if already exists)
+  await client.execute(`
+    ALTER TABLE btc_price_cache ADD COLUMN polymarket_odds REAL;
+  `).catch(() => { /* column already exists */ });
 
   await client.execute(`
     CREATE INDEX IF NOT EXISTS idx_date ON btc_price_cache(date);

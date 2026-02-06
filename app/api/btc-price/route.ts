@@ -1,7 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/db'
-import { btcPriceCache } from '@/db/schema'
+import { btcPriceCache, polymarketIntervalsCache } from '@/db/schema'
 import { eq, and, gte, lte } from 'drizzle-orm'
+
+// Convert "HH:MM:SS" time string to seconds since midnight
+function timeToSeconds(time: string): number {
+  const parts = time.split(':').map(Number)
+  return parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0)
+}
+
+// Read polymarket odds from polymarket_intervals_cache, sorted by time
+async function getPolymarketOddsFromCache(
+  date: string,
+  intervalIndex: number
+): Promise<{ seconds: number; odds: number }[]> {
+  try {
+    const cachedPolyData = await db
+      .select()
+      .from(polymarketIntervalsCache)
+      .where(
+        and(
+          eq(polymarketIntervalsCache.date, date),
+          eq(polymarketIntervalsCache.intervalIndex, intervalIndex)
+        )
+      )
+      .limit(1)
+
+    if (!cachedPolyData || cachedPolyData.length === 0) return []
+
+    const intervalObj = JSON.parse(cachedPolyData[0].data as string)
+    if (!intervalObj.data || intervalObj.data.length === 0) return []
+
+    return intervalObj.data
+      .map((p: any) => ({
+        seconds: timeToSeconds(p.time),
+        odds: p.price,
+      }))
+      .sort((a: any, b: any) => a.seconds - b.seconds)
+  } catch (error) {
+    console.warn('Could not read polymarket cache:', error)
+    return []
+  }
+}
+
+// Forward-fill binary search: find the last odds value at or before the given time
+function findOddsByTime(
+  sortedOdds: { seconds: number; odds: number }[],
+  timeStr: string
+): number | null {
+  if (sortedOdds.length === 0) return null
+
+  const seconds = timeToSeconds(timeStr)
+
+  let lo = 0,
+    hi = sortedOdds.length - 1
+  let result: number | null = null
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (sortedOdds[mid].seconds <= seconds) {
+      result = sortedOdds[mid].odds
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+
+  return result
+}
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
@@ -69,20 +135,36 @@ export async function GET(request: NextRequest) {
     if (cacheIsComplete && cachedData.length > 0) {
       console.log(`Cache hit! Found ${cachedData.length} records (expected ~${expectedRecords})`)
 
+      // Try to fill in Polymarket odds from polymarket cache if missing
+      const hasOdds = cachedData.some((r) => r.polymarketOdds !== null)
+      let polyOddsArray: { seconds: number; odds: number }[] = []
+      if (!hasOdds && intervalParam !== null) {
+        polyOddsArray = await getPolymarketOddsFromCache(date, parseInt(intervalParam))
+        if (polyOddsArray.length > 0) {
+          console.log(`Enriching cached BTC data with ${polyOddsArray.length} Polymarket odds points`)
+        }
+      }
+
       // Return cached data
       const processedCachedData = cachedData
         .filter((record) => record.timestamp <= currentTimePST)
-        .map((record) => ({
-          timestamp: record.timestamp,
-          time: record.time,
-          open: record.open,
-          high: record.high,
-          low: record.low,
-          close: record.close,
-          volume: record.volume,
-          numberOfTrades: record.numberOfTrades,
-          polymarketOdds: record.polymarketOdds ?? undefined, // Include Polymarket odds if available
-        }))
+        .map((record) => {
+          let odds = record.polymarketOdds
+          if (odds === null && polyOddsArray.length > 0) {
+            odds = findOddsByTime(polyOddsArray, record.time)
+          }
+          return {
+            timestamp: record.timestamp,
+            time: record.time,
+            open: record.open,
+            high: record.high,
+            low: record.low,
+            close: record.close,
+            volume: record.volume,
+            numberOfTrades: record.numberOfTrades,
+            polymarketOdds: odds ?? undefined,
+          }
+        })
 
       return NextResponse.json({
         data: processedCachedData,
@@ -137,64 +219,20 @@ export async function GET(request: NextRequest) {
 
     console.log(`Total records fetched: ${allData.length}`)
 
-    // Fetch Polymarket odds if we're fetching a specific interval
-    let polymarketOddsMap: Map<number, number> = new Map()
+    // Fetch Polymarket odds from polymarket_intervals_cache (direct DB read)
+    let polyOddsArray: { seconds: number; odds: number }[] = []
     if (intervalParam !== null) {
       try {
-        console.log(`Fetching Polymarket odds for interval ${intervalParam}...`)
-        const polymarketUrl = `/api/polymarket-price?date=${date}&interval=${intervalParam}`
-        const polymarketResponse = await fetch(`${request.nextUrl.origin}${polymarketUrl}`)
-
-        if (polymarketResponse.ok) {
-          const polymarketData = await polymarketResponse.json()
-
-          if (polymarketData.intervals && polymarketData.intervals.length > 0) {
-            const intervalData = polymarketData.intervals[0]
-            console.log(`Got ${intervalData.data.length} Polymarket data points`)
-
-            // Create a map of timestamp -> odds for quick lookup
-            // Parse the time from Polymarket data and match with timestamps
-            intervalData.data.forEach((point: any) => {
-              // Parse time format HH:MM:SS
-              const [hours, minutes, seconds] = point.time.split(':').map(Number)
-              const pointDate = new Date(date + 'T00:00:00-08:00')
-              pointDate.setHours(hours, minutes, seconds, 0)
-              const pointTimestamp = pointDate.getTime()
-
-              polymarketOddsMap.set(pointTimestamp, point.price)
-            })
-
-            console.log(`Created odds map with ${polymarketOddsMap.size} entries`)
-          }
+        console.log(`Reading Polymarket odds for interval ${intervalParam} from cache...`)
+        polyOddsArray = await getPolymarketOddsFromCache(date, parseInt(intervalParam))
+        if (polyOddsArray.length > 0) {
+          console.log(`Loaded ${polyOddsArray.length} Polymarket odds points (forward-fill interpolation)`)
+        } else {
+          console.log(`No Polymarket cache data for interval ${intervalParam} yet`)
         }
       } catch (polymarketError) {
-        console.warn('Could not fetch Polymarket odds:', polymarketError)
-        // Continue without Polymarket data
+        console.warn('Could not read Polymarket odds:', polymarketError)
       }
-    }
-
-    // Helper function to find closest Polymarket odds
-    const findClosestOdds = (timestamp: number): number | null => {
-      if (polymarketOddsMap.size === 0) return null
-
-      // Try exact match first
-      if (polymarketOddsMap.has(timestamp)) {
-        return polymarketOddsMap.get(timestamp)!
-      }
-
-      // Find closest timestamp within 60 seconds
-      let closestTimestamp: number | null = null
-      let minDiff = 60 * 1000 // 60 seconds max
-
-      for (const [oddsTimestamp, odds] of polymarketOddsMap.entries()) {
-        const diff = Math.abs(oddsTimestamp - timestamp)
-        if (diff < minDiff) {
-          minDiff = diff
-          closestTimestamp = oddsTimestamp
-        }
-      }
-
-      return closestTimestamp ? polymarketOddsMap.get(closestTimestamp)! : null
     }
 
     // Process all second-level data
@@ -215,18 +253,19 @@ export async function GET(request: NextRequest) {
           return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
         }
 
-        const polymarketOdds = findClosestOdds(timestamp)
+        const timeStr = formatTime(pstTime)
+        const polymarketOdds = findOddsByTime(polyOddsArray, timeStr)
 
         return {
           timestamp: timestamp,
-          time: formatTime(pstTime),
+          time: timeStr,
           open: parseFloat(kline[1]),
           high: parseFloat(kline[2]),
           low: parseFloat(kline[3]),
           close: parseFloat(kline[4]),
           volume: parseFloat(kline[5]),
           numberOfTrades: parseInt(kline[8]),
-          polymarketOdds: polymarketOdds ?? undefined, // Include matched Polymarket odds
+          polymarketOdds: polymarketOdds ?? undefined, // Forward-fill interpolated Polymarket odds
         }
       })
 

@@ -352,6 +352,20 @@ export default function BTCPriceCharts() {
       }
     }
 
+    // Pre-process separate polymarket data for efficient forward-fill interpolation
+    // Convert time strings to numeric seconds for fast binary search
+    const sortedPolyData: { seconds: number; price: number }[] = []
+    if (hasSeparatePolymarketData && currentPolymarketInterval?.data?.length > 0) {
+      currentPolymarketInterval.data.forEach((p: any) => {
+        const parts = p.time.split(':').map(Number)
+        sortedPolyData.push({
+          seconds: parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0),
+          price: p.price,
+        })
+      })
+      sortedPolyData.sort((a, b) => a.seconds - b.seconds)
+    }
+
     // Prepare combined BTC + Polymarket chart data
     const btcChartData = currentBtcInterval.data.map((d) => ({
       ...d,

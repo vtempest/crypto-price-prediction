@@ -20,3 +20,11 @@ export const btcPriceCacheIndex = sqliteTable("btc_price_cache_index", {
   date: text("date"),
   timestamp: integer("timestamp"),
 });
+
+export const polymarketIntervalsCache = sqliteTable("polymarket_intervals_cache", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  date: text("date").notNull(),
+  intervalIndex: integer("interval_index").notNull(),
+  data: text("data").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
