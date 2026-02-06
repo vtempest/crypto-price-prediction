@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PolymarketMarket, PriceHistoryResponse, ProcessedPolymarketInterval, fetchMarketQuote } from '@/lib/polymarket-types'
-import { db } from '@/db'
-import { polymarketIntervalsCache } from '@/db/schema'
 
 const GAMMA_API_BASE = 'https://gamma-api.polymarket.com'
 const CLOB_API_BASE = 'https://clob.polymarket.com'
@@ -109,37 +107,6 @@ export async function GET(request: NextRequest) {
     for (const intervalIndex of intervalsToFetch) {
       try {
         // Check cache first (unless force refresh is requested)
-        if (!forceRefresh) {
-          try {
-            const { eq, and } = await import('drizzle-orm')
-            const cachedData = await db
-              .select()
-              .from(polymarketIntervalsCache)
-              .where(
-                and(
-                  eq(polymarketIntervalsCache.date, date),
-                  eq(polymarketIntervalsCache.intervalIndex, intervalIndex)
-                )
-              )
-              .limit(1)
-
-            if (cachedData && cachedData.length > 0) {
-              const cached = cachedData[0]
-              console.log(`💾 Using cached data for interval ${intervalIndex} (cached at ${new Date(cached.createdAt).toLocaleString()})`)
-              const intervalObj = JSON.parse(cached.data as string) as ProcessedPolymarketInterval
-              intervals.push(intervalObj)
-              mostRecentIndex = Math.max(mostRecentIndex, intervalIndex)
-              continue // Skip to next interval
-            } else {
-              console.log(`📭 No cached data found for interval ${intervalIndex}`)
-            }
-          } catch (cacheErr) {
-            console.warn(`⚠️ Cache read error for interval ${intervalIndex}:`, cacheErr)
-            // Continue to fetch from API if cache fails
-          }
-        } else {
-          console.log(`🔄 Force refresh enabled - skipping cache for interval ${intervalIndex}`)
-        }
 
         console.log(`🔄 Fetching fresh data from Polymarket API for interval ${intervalIndex}`)
 
@@ -313,23 +280,6 @@ export async function GET(request: NextRequest) {
 
         intervals.push(intervalObj)
 
-        // SAVE TO CACHE if the interval is strictly in the past (to avoid caching partial data)
-        if (priceEndTime.getTime() < now) {
-             try {
-                await db.insert(polymarketIntervalsCache).values({
-                    date,
-                    intervalIndex,
-                    data: JSON.stringify(intervalObj),
-                    createdAt: Date.now()
-                })
-                const quoteInfo = quote ? ` + quote (bid=${quote.bid.toFixed(4)}, ask=${quote.ask.toFixed(4)})` : ''
-                console.log(`💾 Cached interval ${intervalIndex} with ${processedData.length} data points${quoteInfo}`)
-             } catch (dbErr) {
-                 console.error('Failed to cache polymarket data', dbErr)
-             }
-        } else {
-          console.log(`⏭️ Skipping cache for current/future interval ${intervalIndex}`)
-        }
 
         console.log(`✅ Successfully processed interval ${intervalIndex} with ${processedData.length} data points`)
 

@@ -35,20 +35,14 @@ export default function BTCPriceCharts() {
     return yesterday
   })
 
-  // BTC Price data for all intervals
+  // BTC Price data for all intervals (includes embedded Polymarket odds)
   const [btcIntervalData, setBtcIntervalData] = useState<{ [key: number]: IntervalData }>({})
   const [btcInitialLoading, setBtcInitialLoading] = useState(true)
   const [btcError, setBtcError] = useState<string | null>(null)
 
-  // Polymarket data - store by interval index for on-demand loading
-  const [polymarketIntervals, setPolymarketIntervals] = useState<{ [key: number]: IntervalData }>({})
-  const [polymarketLoading, setPolymarketLoading] = useState(false)
-  const [polymarketAttempted, setPolymarketAttempted] = useState<Set<number>>(new Set()) // Track attempted intervals
-
   // Lazy loading state
   const [visibleIntervals, setVisibleIntervals] = useState(30) // Start with 30 intervals
   const [isLoadingMore, setIsLoadingMore] = useState(false)
-  const [polymarketError, setPolymarketError] = useState<string | null>(null)
 
   // Fetch BTC Price data for visible intervals
   useEffect(() => {
@@ -144,8 +138,6 @@ export default function BTCPriceCharts() {
   useEffect(() => {
     setVisibleIntervals(30)
     setBtcIntervalData({})
-    setPolymarketIntervals({})
-    setPolymarketAttempted(new Set()) // Reset attempted intervals
   }, [selectedDate])
 
   // Load more intervals function
@@ -179,113 +171,7 @@ export default function BTCPriceCharts() {
     }
   }, [visibleIntervals])
 
-  // Fetch Polymarket data for visible intervals (on-demand)
-  useEffect(() => {
-    async function fetchPolymarketData() {
-      const dateStr = format(selectedDate, 'yyyy-MM-dd')
-
-      // Only fetch intervals that we haven't attempted yet and are visible
-      const intervalsToFetch = Array.from({ length: visibleIntervals }, (_, i) => i)
-        .filter(index => !polymarketAttempted.has(index))
-
-      if (intervalsToFetch.length === 0) {
-        setPolymarketLoading(false)
-        return
-      }
-
-      console.log(`📊 Fetching Polymarket data for ${intervalsToFetch.length} intervals: ${intervalsToFetch.join(', ')}`)
-      setPolymarketLoading(true)
-      setPolymarketError(null)
-
-      try {
-        // Fetch each interval's Polymarket data
-        const promises = intervalsToFetch.map(async (intervalIndex) => {
-          try {
-            const response = await fetch(`/api/polymarket-price?date=${dateStr}&interval=${intervalIndex}`)
-
-            if (!response.ok) {
-              console.warn(`❌ Polymarket API error for interval ${intervalIndex}: ${response.status}`)
-              return { intervalIndex, intervalData: null }
-            }
-
-            const data = await response.json()
-
-            if (data.message || !data.intervals || data.intervals.length === 0) {
-              console.log(`⚠️ No Polymarket market exists for interval ${intervalIndex} on ${dateStr}`)
-              return { intervalIndex, intervalData: null }
-            }
-
-            console.log(`✅ Loaded Polymarket data for interval ${intervalIndex}: ${data.intervals[0].data.length} data points`)
-            // Return the interval data with its index
-            return { intervalIndex, intervalData: data.intervals[0] }
-          } catch (err) {
-            console.error(`❌ Error fetching Polymarket data for interval ${intervalIndex}:`, err)
-            return { intervalIndex, intervalData: null }
-          }
-        })
-
-        const results = await Promise.all(promises)
-
-        // Mark all intervals as attempted
-        setPolymarketAttempted(prev => {
-          const newAttempted = new Set(prev)
-          results.forEach(result => {
-            if (result) {
-              newAttempted.add(result.intervalIndex)
-            }
-          })
-          return newAttempted
-        })
-
-        // Merge new data with existing data (only successful fetches)
-        setPolymarketIntervals(prev => {
-          const newData = { ...prev }
-          let successCount = 0
-          results.forEach(result => {
-            if (result && result.intervalData) {
-              newData[result.intervalIndex] = result.intervalData
-              successCount++
-            }
-          })
-          console.log(`📈 Successfully loaded ${successCount}/${results.length} Polymarket intervals`)
-          return newData
-        })
-      } catch (err) {
-        setPolymarketError('Failed to load Polymarket data. Please try again.')
-        console.error(err)
-      } finally {
-        setPolymarketLoading(false)
-      }
-    }
-
-    fetchPolymarketData()
-  }, [selectedDate, visibleIntervals, polymarketAttempted])
-
-  // Force refresh Polymarket data (invalidate cache)
-  const forceRefreshPolymarketData = async () => {
-    const dateStr = format(selectedDate, 'yyyy-MM-dd')
-
-    console.log(`🔄 Force refreshing Polymarket data for ${dateStr}...`)
-    setPolymarketLoading(true)
-    setPolymarketError(null)
-
-    try {
-      // Clear cache for this date
-      await fetch(`/api/polymarket-cache?date=${dateStr}`, { method: 'DELETE' })
-      console.log(`🗑️ Cache cleared for ${dateStr}`)
-
-      // Clear local state
-      setPolymarketIntervals({})
-      setPolymarketAttempted(new Set())
-
-      // Force re-fetch will happen automatically via useEffect
-    } catch (err) {
-      console.error('Error force refreshing:', err)
-      setPolymarketError('Failed to refresh data')
-    } finally {
-      setPolymarketLoading(false)
-    }
-  }
+  // Polymarket odds are now embedded in BTC data - no separate fetching needed
 
   // Calculate metrics for each interval
   const getIntervalMetrics = (intervalIndex: number) => {
@@ -437,16 +323,10 @@ export default function BTCPriceCharts() {
     const btcMaxPrice = Math.max(...currentBtcInterval.data.map((d) => d.price))
     const btcPadding = (btcMaxPrice - btcMinPrice) * 0.1 || 100
 
-    // Get polymarket data for this interval if available
-    const currentPolymarketInterval = polymarketIntervals[intervalIndex]
-    const hasSeparatePolymarketData = currentPolymarketInterval && currentPolymarketInterval.data.length > 0
-
     // Check if BTC data has embedded Polymarket odds
-    const hasEmbeddedPolymarketData = currentBtcInterval.data.some(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null)
+    const hasPolymarketData = currentBtcInterval.data.some(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null)
 
-    const hasPolymarketData = hasEmbeddedPolymarketData || hasSeparatePolymarketData
-
-    // Polymarket Price calculations (if available)
+    // Polymarket Price calculations (from embedded odds)
     let polymarketStartPrice = 0
     let polymarketEndPrice = 0
     let polymarketMinPrice = 0
@@ -455,16 +335,9 @@ export default function BTCPriceCharts() {
     let polymarketVolatility = 0
 
     if (hasPolymarketData) {
-      // Use embedded Polymarket odds if available, otherwise use separate data
-      let prices: number[] = []
-
-      if (hasEmbeddedPolymarketData) {
-        prices = currentBtcInterval.data
-          .filter(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null)
-          .map(d => d.polymarketOdds!)
-      } else if (hasSeparatePolymarketData) {
-        prices = currentPolymarketInterval.data.map(d => d.price)
-      }
+      const prices = currentBtcInterval.data
+        .filter(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null)
+        .map(d => d.polymarketOdds!)
 
       if (prices.length > 0) {
         polymarketStartPrice = prices[0]
@@ -480,42 +353,24 @@ export default function BTCPriceCharts() {
     }
 
     // Prepare combined BTC + Polymarket chart data
-    const btcChartData = currentBtcInterval.data.map((d, idx) => {
-      // Use embedded polymarketOdds from BTC API if available, otherwise try to find matching Polymarket data
-      let polyOdds = d.polymarketOdds || null
-
-      // Fallback to separate Polymarket data if embedded odds not available
-      if (!polyOdds && hasPolymarketData) {
-        const matchingPoly = currentPolymarketInterval.data.find(p => p.time === d.time)
-        polyOdds = matchingPoly ? matchingPoly.price : null
-      }
-
-      return {
-        ...d,
-        start: btcStartPrice,
-        above: d.price > btcStartPrice ? d.price : null,
-        below: d.price < btcStartPrice ? d.price : null,
-        polyOdds: polyOdds,
-      }
-    })
+    const btcChartData = currentBtcInterval.data.map((d) => ({
+      ...d,
+      start: btcStartPrice,
+      above: d.price > btcStartPrice ? d.price : null,
+      below: d.price < btcStartPrice ? d.price : null,
+      polyOdds: d.polymarketOdds || null,
+    }))
 
 
     // Calculate Threshold Hits for Polymarket
     const thresholdHits: any[] = []
     if (hasPolymarketData && polymarketStartPrice > 0) {
       const thresholds = [10, 15, 20, 75, 80, 85, 90]
-      const thresholdsFound = new Set<number>()
 
-      // Get the data source (embedded or separate)
-      let polyData: { time: string; price: number }[] = []
-
-      if (hasEmbeddedPolymarketData) {
-        polyData = currentBtcInterval.data
-          .filter(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null)
-          .map(d => ({ time: d.time, price: d.polymarketOdds! }))
-      } else if (hasSeparatePolymarketData) {
-        polyData = currentPolymarketInterval.data
-      }
+      // Get embedded Polymarket odds data
+      const polyData = currentBtcInterval.data
+        .filter(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null)
+        .map(d => ({ time: d.time, price: d.polymarketOdds! }))
 
       if (polyData.length > 0) {
         const startPrice = polyData[0].price
@@ -531,7 +386,6 @@ export default function BTCPriceCharts() {
               ...polyData[0],
               threshold
             })
-            thresholdsFound.add(threshold)
             return
           }
 
@@ -546,7 +400,6 @@ export default function BTCPriceCharts() {
               ...hitPoint,
               threshold
             })
-            thresholdsFound.add(threshold)
           }
         })
       }
@@ -811,214 +664,6 @@ export default function BTCPriceCharts() {
             )}
           </div>
 
-          {/* Polymarket Chart */}
-          {hasPolymarketData && (
-            <div className="space-y-3">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-purple-600 dark:text-purple-400 font-semibold">
-                      Polymarket Odds (High-Resolution)
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-[10px] font-medium">
-                      🔄 CLOB API
-                    </span>
-                  </div>
-                  <span className="text-muted-foreground font-mono text-[10px]">
-                    {currentPolymarketInterval.data.length} pts • {currentPolymarketInterval.data[0]?.time} - {currentPolymarketInterval.data[currentPolymarketInterval.data.length - 1]?.time}
-                  </span>
-                </div>
-                {currentPolymarketInterval.quote && (
-                  <div className="flex items-center gap-3 text-xs bg-purple-50 dark:bg-purple-950/20 rounded-lg p-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-muted-foreground">Bid:</span>
-                      <span className="font-mono font-semibold text-green-600 dark:text-green-400">
-                        {(currentPolymarketInterval.quote.bid * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className="text-muted-foreground">Ask:</span>
-                      <span className="font-mono font-semibold text-red-600 dark:text-red-400">
-                        {(currentPolymarketInterval.quote.ask * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className="text-muted-foreground">Spread:</span>
-                      <span className="font-mono font-semibold">
-                        {((currentPolymarketInterval.quote.ask - currentPolymarketInterval.quote.bid) * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    {currentPolymarketInterval.marketUrl && (
-                      <a
-                        href={currentPolymarketInterval.marketUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ml-auto text-purple-600 dark:text-purple-400 hover:underline font-medium"
-                      >
-                        Trade ↗
-                      </a>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <ChartContainer config={btcChartConfig} className="h-[200px] w-full">
-                <ComposedChart
-                  data={currentPolymarketInterval.data}
-                  margin={{ top: 5, right: 5, left: 5, bottom: 5 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis
-                    dataKey="time"
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                    fontSize={10}
-                    interval={Math.floor(currentPolymarketInterval.data.length / 10)}
-                    angle={-30}
-                    textAnchor="end"
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                    tickFormatter={(value) => `${value}%`}
-                    fontSize={11}
-                    width={50}
-                  />
-                  <ChartTooltip
-                    content={
-                      <ChartTooltipContent
-                        hideLabel
-                        formatter={(value, name, item) => {
-                          if (name === 'price') {
-                            return (
-                              <div className="flex w-full justify-between gap-4">
-                                <span className="text-muted-foreground">Odds (Up)</span>
-                                <span className="font-mono font-medium">
-                                  {Number(value).toFixed(1)}%
-                                </span>
-                              </div>
-                            )
-                          }
-                          // Custom tooltip for threshold hits
-                          if (name === 'threshold') {
-                            return (
-                              <div className="flex w-full justify-between gap-4">
-                                <span className="text-muted-foreground">Hit {item.payload.threshold}%</span>
-                                <span className="font-mono font-medium">
-                                  {Number(item.payload.price).toFixed(1)}%
-                                </span>
-                              </div>
-                            )
-                          }
-                          return null
-                        }}
-                      />
-                    }
-                  />
-                  <ReferenceLine
-                    y={50}
-                    stroke="hsl(var(--muted-foreground))"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                  />
-                  <ReferenceLine
-                    y={polymarketStartPrice}
-                    stroke="hsl(280, 90%, 60%)"
-                    strokeWidth={2}
-                    strokeDasharray="2 4"
-                    label={{ value: 'Start', position: 'left', fill: 'hsl(280, 90%, 60%)' }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="price"
-                    stroke="hsl(280, 90%, 60%)"
-                    strokeWidth={3}
-                    dot={false}
-                    isAnimationActive={false}
-                    connectNulls={true}
-                  />
-                  <Scatter
-                    data={thresholdHits}
-                    fill="white"
-                    stroke="hsl(280, 90%, 60%)"
-                    strokeWidth={2}
-                    r={4}
-                    isAnimationActive={false}
-                    name="threshold"
-                  />
-                </ComposedChart>
-              </ChartContainer>
-
-              {/* Polymarket Stats */}
-              <div className="space-y-2">
-                <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                  <div className="rounded-lg bg-purple-50 dark:bg-purple-950/20 p-2">
-                    <p className="text-muted-foreground">Start Odds</p>
-                    <p className="font-mono font-semibold text-xs">{polymarketStartPrice.toFixed(1)}%</p>
-                  </div>
-                  <div className="rounded-lg bg-purple-50 dark:bg-purple-950/20 p-2">
-                    <p className="text-muted-foreground">End Odds</p>
-                    <p className="font-mono font-semibold text-xs">{polymarketEndPrice.toFixed(1)}%</p>
-                  </div>
-                  <div className="rounded-lg bg-purple-50 dark:bg-purple-950/20 p-2">
-                    <p className="text-muted-foreground">Change</p>
-                    <p className={cn(
-                      "font-mono font-semibold text-xs",
-                      polymarketEndPrice >= polymarketStartPrice ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
-                    )}>
-                      {polymarketEndPrice >= polymarketStartPrice ? '+' : ''}{(polymarketEndPrice - polymarketStartPrice).toFixed(1)}%
-                    </p>
-                  </div>
-                </div>
-                {(() => {
-                  const dataPoints = currentPolymarketInterval.data.length
-                  const expectedPoints = 15 * 60 // 15 minutes * 60 seconds
-                  const coverage = Math.min(100, (dataPoints / expectedPoints) * 100)
-                  const avgInterval = 900 / Math.max(1, dataPoints - 1) // seconds between points
-
-                  return (
-                    <div className="rounded-lg bg-purple-50 dark:bg-purple-950/20 p-2 text-xs">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-muted-foreground">Data Quality</span>
-                        <span className="font-mono font-semibold">{coverage.toFixed(0)}% coverage</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Resolution</span>
-                        <span className="font-mono font-semibold">~{avgInterval.toFixed(1)}s intervals</span>
-                      </div>
-                    </div>
-                  )
-                })()}
-              </div>
-            </div>
-          )}
-
-          {/* No Polymarket Data Message */}
-          {!hasPolymarketData && (
-            <div className="space-y-3">
-              <div className="flex h-[200px] items-center justify-center rounded-lg border border-dashed border-muted-foreground/25 bg-muted/10">
-                <div className="text-center space-y-3 p-4">
-                  <p className="text-sm text-muted-foreground">
-                    No Polymarket market for this interval
-                  </p>
-                  <p className="text-xs text-muted-foreground/70">
-                    Markets may not exist for all time periods
-                  </p>
-                  <a
-                    href={`https://polymarket.com/event/btc-updown-15m-${getIntervalTimestamp(intervalIndex)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-block text-xs text-purple-600 dark:text-purple-400 hover:underline"
-                  >
-                    Check on Polymarket ↗
-                  </a>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     )
@@ -1144,55 +789,9 @@ export default function BTCPriceCharts() {
               </div>
             </div>
 
-            {/* Data Availability Summary */}
-            {Object.keys(polymarketIntervals).length > 0 && (
-              <div className="rounded-lg bg-purple-50 dark:bg-purple-950/20 p-3 border border-purple-200 dark:border-purple-800">
-                <div className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-4">
-                    <div>
-                      <span className="font-semibold text-purple-600 dark:text-purple-400">
-                        Polymarket Data Available:
-                      </span>
-                      <span className="ml-2 font-mono">
-                        {Object.keys(polymarketIntervals).length} of {visibleIntervals} intervals
-                      </span>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={forceRefreshPolymarketData}
-                      disabled={polymarketLoading}
-                      className="h-7 text-xs"
-                    >
-                      {polymarketLoading ? (
-                        <>
-                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                          Refreshing...
-                        </>
-                      ) : (
-                        <>🔄 Force Refresh</>
-                      )}
-                    </Button>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {(() => {
-                      const totalPoints = Object.values(polymarketIntervals).reduce((sum, interval) => sum + interval.data.length, 0)
-                      return `${totalPoints.toLocaleString()} total data points`
-                    })()}
-                  </div>
-                </div>
-              </div>
-            )}
-
             {btcError && (
               <div className="rounded-lg bg-destructive/10 p-4 text-destructive text-sm">
                 {btcError}
-              </div>
-            )}
-
-            {polymarketError && (
-              <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/20 p-4 text-yellow-800 dark:text-yellow-200 text-sm">
-                {polymarketError}
               </div>
             )}
           </CardContent>
@@ -1270,7 +869,7 @@ export default function BTCPriceCharts() {
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
-                        {polymarketIntervals[interval.index] && (
+                        {btcIntervalData[interval.index] && btcIntervalData[interval.index].data.some(d => d.polymarketOdds !== undefined && d.polymarketOdds !== null) && (
                           <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-purple-100 dark:bg-purple-900/30 text-xs">
                             <div className="w-1.5 h-1.5 rounded-full bg-purple-500"></div>
                             <span className="text-purple-600 dark:text-purple-400 font-medium">PM</span>
